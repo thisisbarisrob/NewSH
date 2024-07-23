@@ -1,0 +1,218 @@
+$(document).ready(function() { 
+
+ if ($.cookie('loginUserCookie')) {
+  $("#password_input").trigger('focus');
+  $("#persistent_check_occ").prop('checked', true);
+ }
+ 
+ // Capture "ENTER" Keypress And Submit Form
+    $('input').on('keypress', function (e) {
+  if (e.which == 13 && !checkEmpty()) {
+   $('#signin_submit').trigger('click');
+  }
+ });
+
+    $('#signin_submit').on('keypress', function (e) {
+  if (e.which == 13 && !checkEmpty()) {
+   $('#signin_submit').trigger('click');
+  }
+}); 
+    
+ // Initiates jquery.defaultvalue.js functions to provide functionality to non-HTML5 compliant browsers
+// $('#loginform input[type=text], #loginform input[type=password]').defaultValue();
+ $("#username_input_occ").val($.cookie("loginUserCookie"));
+
+var submitLockTimer;
+
+ $("#signin_submit").on('click', function() {
+  if($("#signin_submit").attr("disabled") == "disabled"){return;}
+  // Reset Variables & Form Fields
+  var fullusername = $("#username_input_occ").val();
+  var username = $("#username_input_occ").val().replace(/@.*/, "");
+  var password = $("#password_input").val();
+  var skip_intercept = $("#skip_intercept_checkbox").is(":checked")
+  var errorsDetected = false;
+  var errorMsg;
+  var errorFields = new Array();
+  
+  $("#errornotification").html('');
+  //$("#errornotification").css('height', '0px');
+  
+  $(' #signon_form input[type=text], #signon_form input[type=password]').removeClass('error');
+    
+  // Validate Form (Basic Validation)
+  if ( username.trim().length === 0 || password.trim().length === 0) {
+    errorsDetected = true;
+    errorMsg = 'Both username and password are required.'
+    if (username.trim().length === 0) { errorFields.push('#username_input_occ'); }
+    if (password.trim().length === 0) { errorFields.push('#password_input'); }    
+  }  
+  
+  // Submit Credentials If Validation Passes
+  if (!errorsDetected) {
+    submitButton.disable();
+    $.ajax({
+      url: "buttonClick?origin="+window.location.host,
+      timeout: 150,
+      dataType: 'json',
+      type: 'GET',
+      success: function(data) {
+        console.log("Preflight check success",data)
+      },
+      error: function(data, textStatus, errorThrown) {
+        console.error("Preflight check error",data, textStatus, errorThrown)
+      }
+    })
+    if(submitLockTimer){clearTimeout(submitLockTimer);}
+    submitLockTimer = setTimeout(function(){submitButton.enable();}, 8000);
+    grecaptcha.execute('6Lfr35QUAAAAAKLqCgXCOFHoWmGS95CyzFBFEjWr', {action: 'submit'}).then(function(token) {
+      document.cookie= "captchatoken="+token+"; Secure;";
+      var login_data = "username=" + encodeURIComponent(username) + "&password=" + encodeURIComponent(password) + "&captchatoken=" + encodeURIComponent(token)
+      if(skip_intercept){
+        login_data = login_data + "&skipIntercept=true"
+      }
+      let requestDate=Date.now()
+      $.ajax({
+        url: "login/auth?ts="+requestDate+"&username="+ encodeURIComponent(username),
+        data: login_data,
+        dataType: 'json',
+        timeout: '8000',
+        type: 'POST',
+        success: function(json) {
+          if (json.preauth) {
+            // Remember Username For Next Time
+            if ($("#persistent_check_occ").is(':checked')) {
+              $.cookie('loginUserCookie', fullusername, { expires: 30, path: '/' });
+            } else {
+              $.removeCookie('loginUserCookie');
+            }
+
+            $("#loginNORS").val(json.nors);
+            $("#loginR").val(json.preauth);
+            $("#signon_form_occ").submit();
+          } else if (json.maintenance) {     
+            window.location.href = 'maintenance.html';  
+          }
+          // New redirect for edge browser detection
+          else if (json.edge){
+            window.location.href = 'unsupported.html';
+          } else if (json.deletembox) {     
+            window.location.href = 'no_mailbox.php?uid=' + fullusername;
+          } else if (json.intercept) {
+            // console.log(json.intercept)
+            if(json.intercept.type === "message") {
+              // console.log("INTERCEPT MESSAGE")
+              $("#skip_intercept_checkbox").prop("checked", true) // On next attempt, skip intercept
+              // Display message, ack intercept, trigger login again on callback
+              displayInterceptMessage(json.intercept.message, function(){
+                $.ajax({
+                  url: "login/ackIntercept",
+                  data: "username=" + encodeURIComponent(username) + "&password=" + encodeURIComponent(password) +"&intercept="+encodeURIComponent(json.intercept.id),
+                  dataType: 'json',
+                  timeout: '15000',
+                  type: 'POST',
+                  success: function(json) {
+                    console.log("Ack Intercept")
+                    // Consul entry was updated
+                  },
+                  error: function(bleh, textStatus, errorThrown) {
+                    // console.log("bleh: ", bleh)
+                    // console.log("textStatus: ", textStatus)
+                    // console.log("errorThrown: ", errorThrown)
+                    // We can't really do anything about this. Skip the ack
+                  }
+                })
+                // Redo login (Skip intercept will be set this time)
+                $('#signin_submit').trigger('click');
+              })
+            } else if (json.intercept.type === "redirect"){
+              console.log("INTERCEPT REDIRECT")
+            } else {
+              $('#signin_submit').trigger('click');
+            }
+          } else {
+            errorsDetected = true;
+            errorMsg = json.error;
+            errorFields.push('#username_input_occ');
+            errorFields.push('#password_input');
+            grecaptcha.execute('6Lfr35QUAAAAAKLqCgXCOFHoWmGS95CyzFBFEjWr', {action: 'authfail'});
+            displayError(errorFields, errorMsg);
+          }
+          submitButton.enable();
+          if(submitLockTimer){clearTimeout(submitLockTimer);}
+        },
+        error: function(bleh, textStatus, errorThrown) {
+          errorsDetected = true;
+          errorMsg = 'Unable to communicate with login server.';
+          console.error(Date.now() + " : Unable to Log in.  Request date : " + requestDate)
+          console.log("Error Status : " + textStatus)
+          console.log("Thrown Error : " + errorThrown)
+          displayError(errorFields, errorMsg);
+          submitButton.enable();
+          if(submitLockTimer){clearTimeout(submitLockTimer);}
+        }
+      });   
+    }).catch( (e)=>{console.error("GRE Update error, " + e.message)});
+  } else {
+    // Display The Error Message
+    displayError(errorFields, errorMsg);
+  } 
+ }); 
+});
+
+function displayError(errorFields, errorMsg) {
+    // Light Up Fields With Errors Present (As defined in errorFields array)
+    for(var i in errorFields) {
+     $(errorFields[i]).addClass('error');
+    }
+
+    // Light Up Fields With Errors Present (As defined in errorFields array)
+    for(var i in errorFields) {
+     $(errorFields[i]).addClass('error');
+    }
+    
+    $("#error").animate({
+     height: '20'
+    }, 200, function() {
+      // Display The Error Message
+      $("#error").html('<img src="images/error_button.png"> ' + errorMsg);
+      $("#error").fadeIn('slow', function() {
+        // Animation complete
+      });     
+     });
+}
+
+function hideErrors() {
+    $("#error").fadeOut('fast', function() {});
+}
+
+function displayInterceptMessage(message, callback){
+  let oldTitle = $('#heading').html()
+  $("#intercept_submit").on("click", function(){
+    // Switch back to login view (for error display, etc)
+    $('#heading').html(oldTitle)
+    $('#signon_form_div').removeAttr('hidden');
+    $('#intercept_div').attr('hidden', true);
+    callback()
+  })
+
+  if(message.title){
+    $('#heading').html(message.title)
+  }
+  hideErrors()
+  $("#intercept_body_div").html(message.body)
+  $('#intercept_div').removeAttr('hidden');
+  $('#signon_form_div').attr('hidden', true);
+}
+
+function checkEmpty() {
+  var emailValue = $("#username_input_occ").val();
+  var passwordValue = $("#password_input").val();
+
+  if (emailValue == "" || passwordValue == "") {
+    return true;
+  }
+  else {
+    return false;
+  }
+}
